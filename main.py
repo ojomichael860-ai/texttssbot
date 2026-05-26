@@ -1,11 +1,12 @@
 import os
+import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from gtts import gTTS
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Lightweight Web Server for Render Port Binding ---
+# --- Robust Web Server for Render Port & Liveness Checks ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -13,13 +14,19 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is alive!")
 
+    def do_HEAD(self):
+        """Fixes Render's 501 error by accepting HEAD health check requests"""
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
 def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     print(f"Health check server running on port {port}")
     server.serve_forever()
 
-# --- Telegram Bot Logic ---
+# --- Telegram Bot Handler Logic ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome! Send me any text message, and I will convert it into an audio voice note.🎙️"
@@ -50,13 +57,13 @@ async def handle_text_to_speech(update: Update, context: ContextTypes.DEFAULT_TY
         if os.path.exists(filename):
             os.remove(filename)
 
-def main():
+async def main():
     # Fetch token from environment variable
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
     if not TOKEN:
         raise ValueError("No TELEGRAM_TOKEN found in environment variables!")
 
-    # Start the dummy server in a separate thread for Render
+    # Start the background server for Render
     threading.Thread(target=run_health_server, daemon=True).start()
 
     # Build and initialize the Telegram Bot application
@@ -65,8 +72,18 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_to_speech))
     
-    print("Bot is polling...")
-    app.run_polling()
+    print("Bot is initializing and beginning poll...")
+    
+    # Using the safer async context initialization loop structure
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        # Keep the bot running infinitely until stopped
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    main()
+    # Explicitly run the main coroutine loop on the MainThread
+    asyncio.run(main())
